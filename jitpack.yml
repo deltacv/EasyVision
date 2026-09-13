@@ -1,9 +1,0 @@
-jdk:
-  - openjdk11
-before_install:
-  - chmod +x gradlew
-install:
-  - ./gradlew :Shared:publishToMavenLocal :PaperVision:publishToMavenLocal :LwjglPlatform:publishToMavenLocal :EOCVSimPlugin:publishToMavenLocal
-
-
-

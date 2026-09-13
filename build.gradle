@@ -42,7 +42,7 @@ buildscript {
 }
 
 allprojects {
-    group 'org.deltacv.PaperVision'
+    group 'org.deltacv.VisionGraph'
     version '2027.0.0'
 
     ext {

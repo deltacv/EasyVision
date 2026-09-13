@@ -1,0 +1,58 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ master, dev ]
+    tags: [ 'v*' ]
+
+jobs:
+  build-and-release:
+    # Run only on tags starting with 'v' or on branches other than 'master' (i.e. 'dev')
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref != 'refs/heads/master' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # Release build (tagged)
+      - name: Build release shadow jar with Gradle
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          PLUGINSIGNING_PRIVATE: ${{ secrets.DELTACV_PLUGINSIGNING_PRIVATE }}
+        run: ./gradlew -Penv=release shadowJar -x test
+
+      # Dev build (commits to dev branch)
+      - name: Build dev shadow jar with Gradle
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          PLUGINSIGNING_PRIVATE: ${{ secrets.DELTACV_PLUGINSIGNING_PRIVATE }}
+        run: |
+          SHA_SHORT="$(git rev-parse --short HEAD)"
+          ./gradlew -Phash=$SHA_SHORT shadowJar -x test
+
+      # Dev rolling release
+      - name: Publish rolling dev release
+        uses: pyTooling/Actions/releaser@r0
+        if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && github.ref != 'refs/heads/master' }}
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+          rm: true
+          files: |
+            VisionBenchPlugin/build/libs/*.jar
+
+      # Official tagged release
+      - name: Publish tagged release
+        uses: softprops/action-gh-release@v2
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: 'VisionBenchPlugin/build/libs/*.jar'

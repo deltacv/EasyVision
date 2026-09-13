@@ -1,4 +1,4 @@
-name: Publish package to the Maven Central Repository
+name: Build & Publish to the Maven Central Repository
 on:
   push:
     # Pattern matched against refs/tags

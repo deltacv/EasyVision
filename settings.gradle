@@ -1,10 +1,21 @@
-rootProject.name = 'PaperVision'
+pluginManagement {
+    repositories {
+        mavenCentral()
+        gradlePluginPortal()
 
-include 'PaperVision'
-include 'PaperVision:NodeAnnotationProcessor'
+        maven { url "https://frcmaven.wpi.edu/artifactory/release" }
+        maven { url "https://maven.photonvision.org/releases" }
+    }
+}
+
+rootProject.name = 'VisionGraph'
+
+include 'VisionGraph'
 include 'Shared'
 
-include 'EOCVSimPlugin'
+include 'VisionBenchPlugin'
 
 include 'LwjglPlatform'
 include 'LwjglPlatform:Standalone'
+
+include 'AnnotationProcessor'

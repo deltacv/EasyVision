@@ -98,13 +98,12 @@ fabric.properties
 .idea/codestream.xml
 
 # End of https://www.toptal.com/developers/gitignore/api/intellij
-
+*.hprof
 *.log
 
 **/build/*
 **/Build.kt
-!PaperVision/src/main/kotlin/io/github/deltacv/papervision/codegen/build/*
-
+!VisionGraph/src/main/kotlin/org/deltacv/visiongraph/codegen/build/*
 
 *.DS_Store
 

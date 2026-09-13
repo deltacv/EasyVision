@@ -6,13 +6,15 @@ buildscript {
     ext {
         kotlin_version = "2.3.0"
         kotlinx_coroutines_version = "1.10.2"
+        kotlinx_serialization_version = "1.10.0"
+
+        imgui_version = "1.92.7.1"
         classgraph_version = "4.8.112"
-        imgui_version = "1.87.6"
         gson_version = "2.8.9"
         lwjgl_version = "3.3.2"
         mackjpeg_version = "1.0.5"
 
-        eocvsim_version = '4.1.1'
+        eocvsim_version = '4.2.0'
 
         slf4j_version = "2.0.16"
         log4j_version = "2.24.1"
@@ -41,7 +43,7 @@ buildscript {
 
 allprojects {
     group 'org.deltacv.PaperVision'
-    version '1.1.0'
+    version '2027.0.0'
 
     ext {
         standardVersion = version
@@ -75,3 +77,6 @@ allprojects {
         }
     }
 }
+
+
+

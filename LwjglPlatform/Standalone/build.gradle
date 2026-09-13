@@ -12,8 +12,9 @@ dependencies {
     implementation "ch.qos.logback:logback-classic:$logback_classic_version"
 }
 
-task(runEv, dependsOn: 'classes', type: JavaExec) {
-    main = 'io.github.deltacv.papervision.platform.lwjgl.AppMain'
+tasks.register('runPv', JavaExec) {
+    dependsOn 'classes'
+    mainClass = 'org.deltacv.visiongraph.platform.lwjgl.AppMain'
     classpath = sourceSets.main.runtimeClasspath
 
     if (org.gradle.internal.os.OperatingSystem.current().isMacOsX()) {
@@ -23,6 +24,9 @@ task(runEv, dependsOn: 'classes', type: JavaExec) {
 
 tasks.withType(Jar) {
     manifest {
-        attributes['Main-Class'] = 'io.github.deltacv.papervision.platform.lwjgl.AppMain'
+        attributes['Main-Class'] = 'org.deltacv.visiongraph.platform.lwjgl.AppMain'
     }
 }
+
+
+

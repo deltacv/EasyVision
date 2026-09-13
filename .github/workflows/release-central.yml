@@ -24,4 +24,7 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.JRELEASER_GPG_SECRET_KEY }}
           PLUGINSIGNING_PRIVATE: ${{ secrets.DELTACV_PLUGINSIGNING_PRIVATE }}
         run: |
-          ./gradlew -Penv=release :Shared:publishToMavenCentral :PaperVision:publishToMavenCentral :LwjglPlatform:publishToMavenCentral :EOCVSimPlugin:publishToMavenCentral --no-configuration-cache -x test -x :EOCVSimPlugin:shadowJar
+          ./gradlew -Penv=release :Shared:publishToMavenCentral :VisionGraph:publishToMavenCentral :LwjglPlatform:publishToMavenCentral :VisionBenchPlugin:publishToMavenCentral --no-configuration-cache -x test -x :VisionBenchPlugin:shadowJar
+
+
+

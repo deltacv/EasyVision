@@ -1,0 +1,12 @@
+name = "VisionGraph"
+author = "deltacv"
+author-email = "dev@deltacv.org"
+version = "{{version}}" # This will be replaced by Gradle using the artifact version
+description = "Create your custom OpenCV algorithms using a user-friendly node editor, inspired by industry-leading interfaces! Quickly prototype your vision as you edit. "
+
+min-api-version = "4.2.0"
+
+super-access = true
+super-access-reason = "VisionGraph requires your permision to fully support all features related to rendering user interaction and filesystem access."
+
+main = "org.deltacv.visiongraph.plugin.VisionGraphPlugin"

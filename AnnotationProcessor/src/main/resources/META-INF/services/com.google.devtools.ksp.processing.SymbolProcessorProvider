@@ -1,0 +1,3 @@
+org.deltacv.visiongraph.annotation.papernode.PaperNodeAnnotationProcessorProvider
+org.deltacv.visiongraph.annotation.codectype.CodecTypeAnnotationProcessorProvider
+org.deltacv.visiongraph.annotation.polymorphicserializable.PolymorphicSerializableAnnotationProcessorProvider

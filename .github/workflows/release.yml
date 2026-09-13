@@ -40,11 +40,14 @@ jobs:
         tag: 'Dev'
         rm: true
         files: |
-          EOCVSimPlugin/build/libs/*.jar
+          VisionBenchPlugin/build/libs/*.jar
       if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v')}}
 
     - uses: softprops/action-gh-release@v2
       if: ${{ startsWith(github.ref, 'refs/tags/v') }}
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        files: 'EOCVSimPlugin/build/libs/*.jar'
+        files: 'VisionBenchPlugin/build/libs/*.jar'
+
+
+

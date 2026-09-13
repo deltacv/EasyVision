@@ -54,7 +54,7 @@ The code generation subsystem functions as an end-to-end domain-specific compile
 | - JavaLanguage:    class extends OpenCvPipeline / StreamableOpenCvPipeline        |
 | - KotlinLanguage:  class with val/var properties, override fun, @Synchronized     |
 | - CPythonLanguage: def runPipeline(input, llrobot) with tuple destructuring       |
-| - Embeds unresolved placeholder tokens: $$PV_PH_14$$                              |
+| - Embeds unresolved placeholder tokens: <mack!14>                                  |
 +-----------------------------------------+-----------------------------------------+
                                           |
                                           v
@@ -624,27 +624,93 @@ When a downstream node requests the value of `output`:
 
 ---
 
-## Two-Pass Placeholder Resolution
+## Two-Pass Placeholder Resolution: `PlaceholderResolver`
 
-Forward references—such as computing an import list after the class body has been crawled, or generating unique variable names across nested closures—are solved using `PlaceholderResolver` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/codegen/resolve/PlaceholderResolver.kt`).
+Forward references—such as determining the complete import header after all method bodies have been crawled, or resolving variable names across nested dependent blocks—are handled by `PlaceholderResolver` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/codegen/resolve/PlaceholderResolver.kt`) and the `Resolvable` hierarchy (`Resolvable.kt`).
 
-Placeholders embed tokens of the form `$$PV_PH_<ID>$$` into the raw string stream:
+### The Token Wire Format (`<mack!%d>`)
 
-```
-Raw Code Stream:
-----------------
-$$PV_PH_0$$
+Placeholders embed delimited token keys into the raw source code stream during initial code emission:
+* **Prefix & Suffix**: `PLACEHOLDER_PREFIX = "<mack!"` and `PLACEHOLDER_SUFFIX = ">"`.
+* **Token Template**: `PLACEHOLDER_TEMPLATE = "<mack!%d>"` where `%d` is an integer identifier lazily allocated from `IdContext.local.peekNonNull<Placeholder<*>>()`.
+* **String Representation**: Calling `placeholder.toString()` or `placeholder.key` outputs its delimited token (e.g. `<mack!0>`, `<mack!1>`, `<mack!2>`).
+
+```java
+Raw Pre-Resolution Stream:
+--------------------------
+<mack!0>
 
 public class Pipeline extends OpenCvPipeline {
-    private Mat $$PV_PH_1$$ = new Mat();
-...
+    private Mat <mack!1> = new Mat();
+
+    @Override
+    public Mat processFrame(Mat input) {
+        <mack!2>
+        return <mack!3>;
+    }
+}
 ```
 
-### Resolution Passes
-1. **Pass 1 (Local Expressions & Dependent Placeholders)**:
-   Resolves local tokens, dependent types, and variable names. Recursively iterates until all inner tokens are fully expanded.
-2. **Pass 2 (`resolveLast = true`)**:
-   Resolves headers and outer scopes. Specifically, `importScopePlaceholder` is tagged with `resolveLast = true`. This guarantees that all types emitted across all methods and helper classes have been discovered and registered before the finalized import header is rendered at the top of the file.
+### The `Resolvable<T>` Hierarchy
+
+1. **`Resolvable.Now<T>`**:
+   Wraps an already-computed result. Resolves synchronously without embedding token tags into the code stream.
+2. **`Resolvable.Placeholder<T>`**:
+   Represents a late-bound value implementing `IdElement`.
+   * Holds `val resolveLast: Boolean` (defaults to `false`).
+   * Caches its resolved value on first evaluation.
+   * Exposes an `onResolve: PaperEventHandler` so downstream callbacks can listen for resolution via `letOrDefer { ... }`.
+3. **`Resolvable.DependentPlaceholder<P, T>`**:
+   Defers evaluation of its resolver closure until its upstream `dependency: Resolvable<P>` resolves to a non-null value.
+4. **`Resolvable.DoubleDependentPlaceholder<P1, P2, T>` & `ListPlaceholder<T>`**:
+   Chains evaluation across multiple upstream dependencies.
+
+---
+
+### The Two-Pass Resolution Engine
+
+`CodeGen.build()` first invokes `language.build(this)` to produce the raw code string, then passes it to `placeholderResolver.resolve(raw)`:
+
+```
+Raw Source with <mack!%d> Tokens
+             │
+             ├── Pass 1 (resolveLast = false)
+             │     ├── Recursively replaces expressions, variable names, and deferred blocks
+             │     ├── Cycle guard: tracks active placeholder IDs in a recursion stack
+             │     └── Auto-Import: when resolving a Value, calls importScope.importType(value.type)
+             │
+             └── Pass 2 (resolveLast = true)
+                   └── Resolves <mack!0> (CodeGen.importScopePlaceholder)
+                         ├── Builds de-duplicated, sorted import list
+                         ├── Applies wildcard optimization (e.g. import org.opencv.core.*)
+                         └── Replaces <mack!0> at the top of the file
+             │
+             ▼
+Finalized Executable Source Code
+```
+
+#### Pass 1: Local Expressions & Dynamic Import Collection (`resolveLast = false`)
+* Iterates in a `do { val (text, changed) = replaceOnce(...) } while (changed)` loop until no more non-`resolveLast` tokens change.
+* `replaceOnce` scans the string for `Resolvable.PLACEHOLDER_PREFIX` (`<mack!`) and `Resolvable.PLACEHOLDER_SUFFIX` (`>`).
+* **Cycle Prevention**: Maintains an in-flight stack (`stack: MutableList<Int>`). If `pid in stack`, a recursive cycle is detected, a warning is logged, and infinite expansion is prevented.
+* **Dynamic Import Discovery**: When a placeholder resolves to a `Value`, `resolvedValueToString()` automatically calls:
+  ```kotlin
+  importScope.importType(value.type)
+  ```
+  This guarantees that all types used in synthesized methods, expressions, and OpenCV operations are automatically registered for import without manual book-keeping.
+
+#### Pass 2: Header Scope Injection (`resolveLast = true`)
+* Once Pass 1 has completely stabilized and every expression in the class body has been expanded, Pass 2 runs with `resolveLastPlaceholders = true`.
+* The primary `resolveLast` placeholder is `CodeGen.importScopePlaceholder` (`<mack!0>`), written by `BaseLanguage` at the very top of `mainScope`.
+* Because Pass 1 has already processed every statement, `importScope` now has the complete, exhaustive catalog of all types used across the pipeline.
+* `BaseImportBuilder` renders the final import header:
+  * Excludes default imports (e.g. `java.lang.String`).
+  * De-duplicates identical package paths.
+  * **Wildcard Optimization**: If more than 2 distinct classes come from the same package (e.g. `Mat`, `Point`, `Rect` from `org.opencv.core`), and `optimizeImports` is true, they are consolidated into a single wildcard import:
+    ```java
+    import org.opencv.core.*;
+    ```
+* The finalized import block replaces `<mack!0>` at the top of the file, producing pristine, compile-ready source code.
 
 ---
 

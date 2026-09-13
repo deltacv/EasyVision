@@ -1,6 +1,6 @@
 # VisionGraph Technical Architecture Documentation
 
-Welcome to the software architecture documentation for **VisionGraph** (formerly *PaperVision* / *EasyVision*, maintained by [deltacv](https://github.com/deltacv/VisionGraph)).
+Welcome to the software architecture documentation for **VisionGraph** (formerly *PaperVision*, maintained by [deltacv](https://github.com/deltacv/VisionGraph)).
 
 This documentation suite serves as an architectural and design reference for developers and contributors working on the VisionGraph codebase. Written from an engineering perspective, each chapter explains the **what**, **how**, and **why** of a specific subsystem, moving from high-level architectural patterns to concrete implementation details, thread models, and lifecycle sequences.
 

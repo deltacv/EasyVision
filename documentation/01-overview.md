@@ -2,7 +2,7 @@
 
 ## Purpose and Scope
 
-**VisionGraph** (historically developed as *PaperVision* / *EasyVision* under the [deltacv](https://github.com/deltacv/VisionGraph) ecosystem) is an open-source visual node-graph editor, polyglot code generation compiler, and interactive computer vision prototyping environment. 
+**VisionGraph** (historically developed as *PaperVision* under the [deltacv](https://github.com/deltacv/VisionGraph) ecosystem) is an open-source visual node-graph editor, polyglot code generation compiler, and interactive computer vision prototyping environment. 
 
 Developed primarily for robotics applications—specifically FIRST Tech Challenge (FTC) and FIRST Robotics Competition (FRC) teams using OpenCV and EasyOpenCV—VisionGraph enables robotics programmers and computer vision engineers to visually assemble complex image processing pipelines, inspect intermediate frames at any point in the pipeline in real-time, tune algorithm thresholds interactively, and export optimized production-ready source code into multiple target programming languages without manual reimplementation.
 

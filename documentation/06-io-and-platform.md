@@ -82,18 +82,7 @@ FRAME PROCESSING PIPELINE:
 ### Architectural Stages of Frame Processing
 
 #### 1. Ingestion (`offerJpegAsync`)
-When a frame arrives from `ClientPrevizStream`, it is submitted to `offerJpegAsync`:
-```kotlin
-fun offerJpegAsync(
-    id: Int,
-    width: Int,
-    height: Int,
-    bytes: ByteArray,
-    offset: Int = 0,
-    length: Int = bytes.size
-)
-```
-Rather than decompressing synchronously on the network thread, work is offloaded to `workerScope = CoroutineScope(Dispatchers.Default + SupervisorJob())`.
+When a frame arrives from `ClientPrevizStream`, it is submitted to `offerJpegAsync(id, width, height, bytes)`. Rather than decompressing synchronously on the network thread, work is offloaded to a background worker coroutine scope (`Dispatchers.Default + SupervisorJob()`).
 
 #### 2. High-Performance Memory Pooling (`MemoryPool`)
 Allocating multi-megabyte `ByteArray` instances 60 times per second triggers severe garbage collection pauses. VisionGraph utilizes `MemoryPool` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/util/MemoryPool.kt`) with tiered bucket capacities (`tierCapacity = 8`). Worker tasks borrow an appropriately sized byte array from the pool, fill it with raw RGBA pixel data, and return it once the GPU upload finishes.
@@ -102,14 +91,7 @@ Allocating multi-megabyte `ByteArray` instances 60 times per second triggers sev
 Decompression is accelerated via [MackJPEG](https://github.com/deltacv/MackJPEG), which binds to native [libjpeg-turbo](https://libjpeg-turbo.org/) SIMD assembly routines (ARM NEON, x86 AVX2/SSE2), converting compressed JPEG streams to uncompressed RGBA pixel buffers in sub-millisecond times.
 
 #### 4. Bounded Buffer with Backpressure (`DROP_OLDEST`)
-Decompressed frames are pushed to a channel:
-```kotlin
-private val queuedTextures = Channel<FutureTexture>(
-    capacity = 15,
-    onBufferOverflow = BufferOverflow.DROP_OLDEST
-)
-```
-If the rendering loop slows down, the queue automatically discards stale frames. The UI always displays the most recent video frame without accumulation lag.
+Decompressed frames are queued into a bounded coroutine channel (`queuedTextures`) with a fixed capacity of 15 and `BufferOverflow.DROP_OLDEST` eviction policy. If the rendering loop drops frames or slows down, stale textures are dropped automatically so that the UI always renders the latest available frame without pipeline buffering latency.
 
 #### 5. Render-Thread Consumption (`draw()`)
 During the main render pass, `TextureProcessorQueue.draw()` runs directly on the OpenGL render thread:

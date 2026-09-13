@@ -95,11 +95,7 @@ PlatformSetup.setup()
 ### 2. Modifying Settings at Runtime
 When the user changes options in the UI (e.g., selecting Spanish in `OptionsWindow` or checking "Don't show again" on the welcome modal):
 1. The UI component invokes `visionGraph.changeLanguage("es")`.
-2. A new `PaperVisionConfig` instance is constructed with updated properties:
-   ```kotlin
-   config.save(config.data.copy(lang = newLang, shouldAskForLang = false))
-   ```
-3. `FilePlatformConfigManager` writes the JSON payload to `config.json` immediately and updates `this.data`.
+2. `config.save(...)` persists the modified `PaperVisionConfig` data class directly to `~/.papervision/config.json` and updates the in-memory settings cache.
 
 ### 3. Application Termination
 During `visionGraph.destroy()`:
@@ -125,15 +121,9 @@ VisionGraph implements runtime multi-language localization using the lightweight
   ```
 
 ### Dynamic Thread-Local Translation Binding
-When `visionGraph.changeLanguage(langCode)` is called:
-```kotlin
-fun changeLanguage(langCode: String) {
-    currentLanguage = Language("/lang_pv.csv", langCode).apply { 
-        makeThreadTr() 
-    }
-}
-```
-* `makeThreadTr()` binds the selected translation dictionary to the thread-local resolver used by the global `tr(key, ...args)` helper.
+When `visionGraph.changeLanguage(langCode)` is invoked:
+* A new `Language` dictionary is loaded from classpath resource `/lang_pv.csv` for the target language code.
+* Calling `makeThreadTr()` binds the selected dictionary to the thread-local resolver used by the global `tr(key, ...args)` helper.
 * String interpolation is supported via `$[0]`, `$[1]` tokens (e.g., `tr("win_about_version", BuildInfo.VERSION_STRING, BuildInfo.BUILD_DATE)`).
 * All UI strings—node category titles, socket labels, error toasts, and dialog headers—call `tr("token")`, ensuring instantaneous UI updates when the language changes without restarting the application.
 

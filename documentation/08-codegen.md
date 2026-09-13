@@ -172,21 +172,15 @@ In a visual DAG, outputs from one node connect to inputs of another. In VisionGr
 ### Key `GenValue` Specializations
 
 #### 1. `GenValue.Mat`
-Represents an OpenCV image buffer:
-```kotlin
-open class Mat(
-    val value: Resolvable<Value>,
-    val color: Resolvable<ColorSpace>,
-    val isBinary: Boolean = Boolean.FALSE
-) : GenValue()
-```
-* **Color Space Tracking**: Tracks whether the image is currently `RGB`, `BGR`, `HSV`, `LAB`, `YCrCb`, or `GRAY`. Downstream nodes check `color` to avoid redundant conversions or throw compile errors when incompatible color spaces meet.
-* **Semantic Contract Validation**: Exposes `requireBinary(attribute)` and `requireNonBinary(attribute)`. If a node requires a binary mask (e.g. contour detection) but receives a color Mat, an `AttributeGenException` is raised instantly, displaying an error directly on the visual socket pin.
+Encapsulates an OpenCV image buffer with three core properties:
+* `value: Resolvable<Value>`: The variable identifier representing the OpenCV matrix in the emitted code.
+* `color: Resolvable<ColorSpace>`: Tracks whether the image is currently in `RGB`, `BGR`, `HSV`, `LAB`, `YCrCb`, or `GRAY` format. Downstream nodes inspect this property to skip redundant conversions or raise compilation errors.
+* `isBinary: Boolean`: Flags whether the matrix is a thresholded single-channel binary mask. Nodes that require binary inputs (e.g. contour detectors) call `requireBinary(attribute)` to validate incoming matrices, raising immediate compile errors directly on socket pins if color matrices are linked.
 
 #### 2. `GenValue.Number` (`Int`, `Float`, `Double`)
-Every number has an `Actual` representation (wrapping a Kotlin primitive in `Resolvable<T>`) and a `Runtime` representation (wrapping a `Resolvable<Value>`).
+Every number has an `Actual` representation (wrapping a compile-time Kotlin primitive) and a `Runtime` representation (wrapping a `Resolvable<Value>` variable reference).
 * Provides polymorphic conversions: `toInt(langHolder)`, `toFloat(langHolder)`, `toDouble(langHolder)`, and `toRuntime(langHolder)`.
-* If an `Actual` is converted to `toRuntime()`, it asks the active language backend to render the literal value into a typified `Value`.
+* When an `Actual` is converted via `toRuntime()`, it requests the active language backend to render the literal into a typified code `Value`.
 
 #### 3. `GenValue.Scalar`
 Represents 4-channel color/threshold bounds:
@@ -207,51 +201,23 @@ Heterogeneous collection support:
 * `Either<E>(actual, runtime)`: Container providing a `.match(ifActual, ifRuntime)` pattern-matching helper.
 
 ### Deferred Evaluation (`defer`)
-Because upstream nodes might not have emitted their code when a downstream attribute checks its input, every `GenValue` subclass provides a companion factory `defer { ... }`:
-```kotlin
-fun defer(genValueResolver: () -> Mat?) = Mat(
-    Resolvable.from { genValueResolver()?.value },
-    Resolvable.from { genValueResolver()?.color },
-    Boolean.defer { genValueResolver()?.isBinary }
-)
-```
-This defers value and color evaluation until the resolution pass, preventing `NullPointerException`s during topological traversal.
+Because upstream nodes might not have finished emitting their code when a downstream attribute references an input socket, every `GenValue` specialization provides a companion `defer` factory. This wraps the underlying variable, color space, and metadata in `Resolvable.from { ... }` provider lambdas. Property evaluation is deferred until the final placeholder resolution pass, eliminating null pointer exceptions regardless of graph traversal order.
 
 ---
 
 ## State Management: `CodeGenSession`
 
-To decouple node code emission from attribute retrieval, every node defines a **Session** implementing `CodeGenSession` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/codegen/CodeGen.kt`):
-
-```kotlin
-interface CodeGenSession
-object NoSession : CodeGenSession
-```
+To decouple node code emission from attribute retrieval, every node defines an internal **Session** class implementing `CodeGenSession` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/codegen/CodeGen.kt`). Nodes that produce no outputs use the singleton `NoSession`.
 
 ### The Session Lifecycle
 
-1. **Declaration**: A node declares an internal session class containing its output variables:
-   ```kotlin
-   class CvtColorNode : DrawNode<CvtColorNode.Session>() {
-       class Session : CodeGenSession {
-           lateinit var outputMatValue: GenValue.Mat
-       }
-   ...
-   ```
+1. **Declaration**: A node declares an inner session class holding its output variable references (e.g. `lateinit var outputMatValue: GenValue.Mat`).
 2. **Instantiation & Storage**: When `genCodeIfNecessary(current)` executes:
-   * The node creates `val session = Session()`.
+   * The node creates an instance of its session class.
    * It emits local variables or instance fields into the current scopes.
-   * It stores references to those variables inside `session`.
-   * The generator returns `session`. `CodeGen` caches it in `codeGen.sessions[this] = session`.
-3. **Retrieval**: Downstream nodes query the upstream output via `sourceNode.getGenValueOf(current, sourceAttribute)`:
-   ```kotlin
-   override fun getGenValueOf(current: CodeGen.Current, attrib: Attribute): GenValue {
-       if (attrib == output) {
-           return GenValue.Mat.defer { current.sessionOf(this)?.outputMatValue }
-       }
-       return GenValue.None
-   }
-   ```
+   * It stores references to those emitted variables inside its session instance.
+   * The generator returns the session, which `CodeGen` caches in `codeGen.sessions[node]`.
+3. **Retrieval**: Downstream nodes query upstream outputs via `sourceNode.getGenValueOf(current, sourceAttribute)`. The source node returns a deferred `GenValue` whose resolution lambda reads `current.sessionOf(this)?.outputProperty`.
 4. **On-Demand Forcing**: If a downstream node requests a session that has not yet been computed, `current.nonNullSessionOf(node)` automatically triggers `node.genCodeIfNecessary(current)`, forcing the upstream dependency to compile first.
 5. **Re-entrancy Protection**: `codeGen.markBusy(node)` and `codeGen.unmarkBusy(node)` prevent recursive loops if circular connections exist.
 
@@ -296,6 +262,79 @@ PolyglotGeneratorCtx<I, S>
   * Loops: `forLoop(i, start, max) { ... }`, `foreach(item, list) { ... }`.
   * Frame streaming: `streamMat(id, mat, color)`, `output.streamIfEnabled(mat, color)`.
 
+### Polyglot DSL Code Examples
+
+#### 1. Declaring Generators Across Languages
+```kotlin
+override val generators = polyglot {
+    // Generator for Java / JVM robotics runtimes
+    generatorFor(JavaLanguage) {
+        current {
+            val session = Session()
+            // Pull upstream inputs
+            val inputMat = input.genValue(current)
+
+            // Emit frame processing logic
+            current.scope {
+                nameComment() // // "Node Name"
+                // statements...
+            }
+            session
+        }
+    }
+
+    // Generator for Python runtimes (e.g. Limelight)
+    generatorFor(CPythonLanguage) {
+        current {
+            val session = Session()
+            // Python generation...
+            session
+        }
+    }
+}
+```
+
+#### 2. Persistent Allocation & Memory Reuse (JVM)
+To prevent native memory exhaustion and per-frame GC pauses, matrices should be declared at class scope and reused:
+```kotlin
+// Allocate a persistent instance field in classStartScope:
+// private Mat blurredMat = new Mat();
+val outputMat = uniqueVariable("blurredMat", Mat.new())
+group {
+    private(outputMat)
+}
+
+// Emit OpenCV call in the active frame processing method:
+current.scope {
+    nameComment()
+    Imgproc("blur", inputMat.value.v, outputMat, Size.new(5.v, 5.v))
+
+    // Automatically emit live preview stream hook if user enabled the socket eye icon
+    output.streamIfEnabled(outputMat, inputMat.color)
+}
+```
+
+#### 3. Emitting Conditional Branches
+```kotlin
+current.scope {
+    val thresholdValue = thresholdAttr.genValue(current).value
+    val condition = thresholdValue greaterThan 100.v
+
+    ifCondition(condition) {
+        Imgproc("threshold", inputMat.value.v, outputMat, thresholdValue, 255.v, Imgproc.THRESH_BINARY)
+    }.elseCondition {
+        Imgproc("copyTo", inputMat.value.v, outputMat)
+    }
+}
+```
+
+#### 4. Live Tuner Parameter Promotion (`GenPreviz`)
+```kotlin
+// In previz/simulation mode: emits a public @Label instance variable
+// In robot production mode: inlines the literal constant
+val ksize = kernelSizeAttr.toPrevizInt(current)
+```
+
 ---
 
 ## Language Resolution: The Closeness Heuristic
@@ -303,25 +342,8 @@ PolyglotGeneratorCtx<I, S>
 When compiling, `CodeGen` dispatches generation through `PolyglotGenerator<I, S>` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/codegen/PolyglotGenerator.kt`).
 
 A node does not need to provide a bespoke generator for every dialect. It can declare generators for abstract language families, and the compiler selects the closest match using an **inheritance distance algorithm**:
-
-```kotlin
-// PolyglotMapping.kt
-private fun KClass<out Language>.inheritanceDistance(other: Language): Int? {
-    if (this == other::class) return 0
-
-    val target = this
-    var current: KClass<*>? = other::class
-    var distance = 0
-
-    while (current != null) {
-        if (current == target) return distance
-        current = current.superclasses.firstOrNull()
-        distance++
-    }
-
-    return null
-}
-```
+* The compiler measures the distance between the target compilation language and candidate generators by crawling the target language's Kotlin superclass hierarchy (`KClass.superclasses`).
+* It assigns a numerical score representing how many inheritance steps separate the candidate from the target.
 
 ### Match Priority Rules
 
@@ -351,19 +373,7 @@ Computer vision pipelines require OpenCV primitives. Because OpenCV method signa
   * `toRotatedRectInst(rect, langHolder)`: Instantiates `new RotatedRect(new Point(x, y), new Size(w, h), angle)`.
   * `syncScalarVariable(scalarVariable, scalar, current)`: Dynamically generates code to synchronize scalar channel arrays (`scalarVariable.val[i] = ...`) when individual channels change.
 * **Dynamic Type Synthesis (`JvmOpenCv.Circle`)**:
-  OpenCV Java does not have a native `Circle` class (circles are represented as 3-element float arrays `[x, y, radius]`). `JvmOpenCv.Circle` defines an active initializer:
-  ```kotlin
-  val Circle = Type("Circle", "Circle") {
-      current {
-          codeGen.classEndScope {
-              clazz(Visibility.PACKAGE_PRIVATE, "Circle", isStatic = true) {
-                  // Synthesizes Point center, double radius, and constructor
-              }
-          }
-      }
-  }
-  ```
-  The first time a graph node references a `Circle`, VisionGraph automatically writes the `Circle` helper class into the bottom of the generated Java file.
+  OpenCV Java does not provide a native `Circle` class (circles are conventionally represented as raw float arrays `[x, y, radius]`). `JvmOpenCv.Circle` defines an active type initializer that injects a synthetic `Circle` helper class (with `Point center` and `double radius` members and constructor) into `classEndScope` the first time any node in the graph references a circle.
 
 ### Python OpenCV: `CPythonOpenCv`
 
@@ -436,21 +446,10 @@ Methods `toPrevizInt()`, `toPrevizFloat()`, `toPrevizDouble()`, and `toPrevizVec
   `GenPreviz` returns the literal constant unmodified. The final generated code contains no `@Label` annotations and no redundant public fields, ensuring maximum execution performance on the target robot.
 
 ### 2. Live Frame Streaming Hooks (`streamMat`)
-When inspecting nodes visually, users can toggle the **Preview Eye Icon** on output sockets.
-* In `ScopeCtx`:
-  ```kotlin
-  fun MatAttribute.streamIfEnabled(mat: Value, matColor: Resolvable<ColorSpace>) {
-      if (displayWindow != null) {
-          streamMat(displayWindow!!.imageDisplay.id, mat, matColor)
-      }
-  }
-  ```
-* In `Scope.streamMat`:
-  If `isForPreviz` is true, the generator checks the current color space. If it is not `RGB`, it automatically injects a color conversion to `RGB`, and emits a call to `streamFrame`:
-  ```java
-  streamFrame(1, intermediateMat, Imgproc.COLOR_GRAY2RGB);
-  ```
-  `streamFrame()` is provided by `StreamableOpenCvPipeline` (the simulator base class). The simulator intercepts these streamed frames, compresses them via TurboJPEG, and streams them over WebSocket IPC back to the VisionGraph editor canvas!
+When inspecting nodes visually, users can toggle the **Preview Eye Icon** on output sockets:
+* **Conditional Activation**: During code generation, `streamIfEnabled(mat, matColor)` checks whether a live preview window is currently attached to that socket pin.
+* **Automatic RGB Conversion**: If the stream is active and compiling for simulation (`isForPreviz == true`), the generator inspects the matrix color space. If the matrix is not already formatted as RGB, it synthesizes an in-place color conversion to RGB.
+* **Simulator Wire Hook**: It emits a call to `streamFrame(streamId, mat, code)`. The `StreamableOpenCvPipeline` base class in the simulator intercepts these frames, compresses them via SIMD TurboJPEG, and transmits them over WebSocket IPC back to the VisionGraph editor canvas in real time.
 
 ---
 
@@ -488,7 +487,7 @@ When a node calls `current.enableJavaTargets()`:
 
 ## Concrete Node Implementation Walkthrough
 
-To see how all these subsystems intersect, consider the complete implementation of `CvtColorNode`:
+To see how all these subsystems intersect in practice, consider the complete implementation of `CvtColorNode`:
 
 ```kotlin
 @PaperNode(
@@ -583,6 +582,45 @@ class CvtColorNode : DrawNode<CvtColorNode.Session>() {
     }
 }
 ```
+
+### Architectural Breakdown of `CvtColorNode`
+
+### 1. Sockets and Visual Properties
+* **Input Sockets**:
+  * `input`: A `MatAttribute` configured in `INPUT` mode that accepts an upstream OpenCV image matrix.
+  * `convertTo`: An `EnumAttribute` in `INPUT` mode presenting a dropdown of valid OpenCV target color spaces (e.g. `RGB`, `BGR`, `HSV`, `GRAY`, `YCrCb`, `Lab`).
+* **Output Sockets**:
+  * `output`: A `MatAttribute` configured in `OUTPUT` mode with `.enablePrevizButton()`, adding a toggleable eye icon in the UI that lets users preview the transformed matrix in real time.
+
+### 2. Session Encapsulation (`Session`)
+`CvtColorNode` defines an inner `Session` class implementing `CodeGenSession`. The session preserves intermediate artifacts produced during compilation:
+* `outputMatValue`: Holds the resulting `GenValue.Mat` containing the variable name and resolved color space of the transformed image.
+* When code generation executes, an instance of `Session` is attached to `current.codeGen.sessions[this]`, where downstream nodes can retrieve it.
+
+### 3. Java / EasyOpenCV Generator
+Under the Java target, the generator implements multiple optimizations and scope divisions:
+1. **Upstream Data Pull**:
+   Invoking `input.genValue(current)` recursively pulls the input `GenValue.Mat` from whatever upstream node is linked to `input`. It also pulls the target color enum from `convertTo.genValue(current)`.
+2. **No-Op Elimination**:
+   The generator compares the input matrix's color space (`inputMat.color.resolve()`) with the requested target color. If the image is already in the target color space, the node bypasses conversion entirely and passes `inputMat` directly to `session.outputMatValue`.
+3. **Class-Level Persistent Allocation (`classStartScope`)**:
+   In high-throughput robotics pipelines, allocating OpenCV `Mat` instances inside the frame processing loop triggers severe GC stutter and native memory churn. The generator allocates a unique variable in class scope (e.g. `private Mat inputMatHSV = new Mat();`) so that memory is reused across frames.
+4. **Frame Processing Body (`processFrameScope`)**:
+   Within the active frame loop:
+   * Emits a section header comment (`nameComment()`).
+   * Emits a deferred `Imgproc.cvtColor(...)` call linking the input matrix, output matrix, and the calculated color conversion code.
+   * Calls `output.streamIfEnabled(mat, targetColor)`: if the user activated the eye icon on the output socket, this automatically generates the preview streaming call for the simulator.
+
+### 4. Python / OpenCV Generator
+In Python pipelines, where memory semantics differ from JVM OpenCV bindings:
+* Matrix instances are dynamically allocated NumPy arrays.
+* The generator emits a direct local call to `cv2.cvtColor(inputMat, code)` inside the current frame function.
+* The result is stored in a locally scoped variable and published to `session.outputMatValue`.
+
+### 5. Downstream Value Publication (`getGenValueOf`)
+When a downstream node requests the value of `output`:
+* `getGenValueOf(current, attrib)` returns a deferred `GenValue.Mat` resolving to `current.sessionOf(this)?.outputMatValue`.
+* If downstream nodes evaluate this socket before `CvtColorNode` finishes generating, the deferred reference safely delays resolution until the session is populated.
 
 ---
 

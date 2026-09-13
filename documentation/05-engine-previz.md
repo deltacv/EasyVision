@@ -63,33 +63,18 @@ The visual editor communicates with an engine strictly using two primitives:
 
 ### 1. The Engine Contract: `PaperVisionEngine`
 * **File**: `Shared/src/main/kotlin/org/deltacv/visiongraph/engine/PaperVisionEngine.kt`
-* **Contract**:
-  ```kotlin
-  interface PaperVisionEngine {
-      fun sendBytes(bytes: ByteArray)
-      fun sendBytes(tag: ByteMessageTag, id: Int, bytes: ByteArray)
-      fun acceptMessage(message: PaperVisionEngineMessage)
-      fun sendResponse(response: PaperVisionEngineMessageResponse)
-  }
-  ```
-An engine implementation receives control messages via `acceptMessage` and transmits binary streams or typed responses back to the client via `sendBytes` and `sendResponse`.
+* **Responsibilities**:
+  * `acceptMessage(message)`: Ingests incoming control messages (pipeline compilation requests, tuner parameter updates, stream toggles) dispatched by clients.
+  * `sendResponse(response)`: Returns correlated responses back to requesting clients.
+  * `sendBytes(tag, id, bytes)`: Transmits binary-framed payloads (e.g. SIMD JPEG preview frames or binary telemetry) tagged with semantic stream identifiers.
 
 ### 2. The Transport Decoupler: `PaperVisionEngineBridge`
 * **File**: `VisionGraph/src/main/kotlin/org/deltacv/visiongraph/engine/bridge/PaperVisionEngineBridge.kt`
-* **Contract**:
-  ```kotlin
-  interface PaperVisionEngineBridge {
-      val isConnected: Boolean
-      val onClientProcess: PaperEventHandler
-
-      fun connectClient(client: PaperVisionEngineClient)
-      fun terminate(client: PaperVisionEngineClient)
-      fun broadcastBytes(bytes: ByteArray)
-      fun sendMessage(client: PaperVisionEngineClient, message: PaperVisionEngineMessage)
-      fun acceptResponse(response: PaperVisionEngineMessageResponse)
-  }
-  ```
-The bridge isolates `PaperVisionEngineClient` from physical connection topologies: in-memory queues, inter-process pipes, WebSockets, or Unix domain sockets.
+* **Responsibilities**:
+  * **Topology Independence**: Decouples `PaperVisionEngineClient` from physical connection layers (in-memory queues, WebSockets, or named pipes).
+  * **Connection Lifecycle**: Exposes `isConnected`, client connection (`connectClient`), and termination (`terminate`) primitives.
+  * **Bidirectional Message Routing**: Routes outgoing messages via `sendMessage`, ingests incoming responses via `acceptResponse`, and broadcasts raw binary streams via `broadcastBytes`.
+  * **Frame Coordination**: Exposes `onClientProcess` event handler to synchronize message polling with the client render loop.
 
 ---
 
@@ -153,33 +138,15 @@ Outgoing messages subclassing `PaperVisionEngineMessage` (`Shared/src/main/kotli
 3. When the engine replies with a `PaperVisionEngineMessageResponse`, the client looks up `response.id`, dispatches the typed callback (`msg.acceptResponse(response)`), and cleans up non-persistent entries.
 
 ### 2. Request Timeout & Orphan Purging (5-Second TTL)
-In unstable or crashed network connections, an engine might fail to respond. Without mitigation, `messagesAwaitingResponse` would leak indefinitely.
-During the per-frame `process()` tick:
-```kotlin
-val now = System.currentTimeMillis()
-for ((id, data) in activeTrackingState) {
-    val timeMillis = now - data.timestamp
-    data.message.acceptElapsedTime(timeMillis)
-
-    // Hard TTL bound to purge orphaned requests
-    if (timeMillis > 5000L && !data.message.persistent) {
-        droppedOrphans.add(id)
-    }
-}
-```
-If a message exceeds 5,000 ms without a response, it is purged and its timeout callback (`msg.onTimeout`) is fired, allowing UI elements to show a warning.
+In unstable or severed network connections, an engine might fail to reply to an in-flight request. Without mitigation, `messagesAwaitingResponse` would leak indefinitely.
+* During the per-frame `process()` tick, `PaperVisionEngineClient` scans all actively tracked messages and updates their elapsed duration (`System.currentTimeMillis() - timestamp`).
+* If a non-persistent request exceeds 5,000 ms (5.0 seconds) without receiving an engine response, it is purged from the tracking map and its `onTimeout()` callback is fired, allowing UI elements to display a failure notification or reset state.
 
 ### 3. Asynchronous Ingestion & Backpressure (`bytesChannel`)
-Raw video frames arrive asynchronously from background network threads. If the UI thread stutters or drops frames, buffering unbounded video frames in memory would trigger Out-Of-Memory (OOM) crashes.
-VisionGraph uses a bounded Kotlin Coroutines Channel:
-```kotlin
-private val bytesChannel = Channel<ByteArray>(
-    capacity = 10, 
-    onBufferOverflow = BufferOverflow.DROP_OLDEST
-)
-```
-* **Policy**: `BufferOverflow.DROP_OLDEST` ensures that if the rendering thread cannot consume frames as fast as the engine produces them, older stale frames are discarded in favor of the latest frame, maintaining minimal visual latency.
-* **Drain Cycle**: During `client.process()` on the main thread, all pending byte buffers are drained from `bytesChannel` and dispatched to `ClientByteMessageReceiver`.
+Raw video frames arrive asynchronously from background network threads. If the UI rendering thread stutters or drops frames, buffering unbounded video frames in memory would trigger Out-Of-Memory (OOM) crashes.
+* **Bounded Channel**: VisionGraph channels incoming frames through a bounded Kotlin Coroutine channel (`Channel<ByteArray>`) configured with a fixed capacity of 10 and a `BufferOverflow.DROP_OLDEST` policy.
+* **Latency Guarantee**: If the rendering thread cannot consume frames as rapidly as the engine generates them, older stale frames are automatically dropped in favor of the latest frame, keeping memory pinned and latency minimal.
+* **Main Thread Drain Cycle**: During `client.process()` on the main thread, all pending byte buffers are drained from `bytesChannel` and dispatched to `ClientByteMessageReceiver`.
 
 ---
 

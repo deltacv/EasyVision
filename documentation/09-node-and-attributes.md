@@ -138,40 +138,12 @@ Defined in `VisionGraph/src/main/kotlin/org/deltacv/visiongraph/attribute/Attrib
 Defined in `VisionGraph/src/main/kotlin/org/deltacv/visiongraph/attribute/TypedAttribute.kt`:
 `TypedAttribute` binds a socket to a concrete intermediate code generation value (`GenValue`):
 * **Upstream Link Pulling (`readGenValue`)**:
-  When a node asks for an input's value during code generation, `readGenValue` executes:
-  ```kotlin
-  protected inline fun <reified R : GenValue> readGenValue(
-      current: CodeGen.Current,
-      inputFieldValue: R? = null
-  ): R {
-      if (isInput) {
-          if (hasLink || inputFieldValue == null) {
-              val linkedAttrib = availableLinkedAttribute
-              raiseAssert(linkedAttrib != null, tr("err_musthave_attachedattrib"))
-              if (linkedAttrib === this) raise("err_cannotlink_toself")
-
-              // Recursion guard
-              if (current.codeGen.isBusy(this)) raise("err_recursiondetected")
-              current.codeGen.markBusy(this)
-
-              try {
-                  val value = linkedAttrib.genValue(current)
-                  raiseAssert(value is R, tr("err_attachedattrib_isnot", R::class.simpleName ?: "unknown"))
-                  value
-              } finally {
-                  current.codeGen.unmarkBusy(this)
-              }
-          } else {
-              inputFieldValue // Use editor constant if unlinked
-          }
-      } else {
-          val value = getGenValueFromNode(current)
-          raiseAssert(value is R, tr("err_valreturned_isnot", R::class.simpleName ?: "unknown"))
-          value
-      }
-  }
-  ```
-  This handles backward graph traversal, detects cycles with `isBusy(this)`, pulls upstream code generation, and asserts that the returned value matches the expected `GenValue` type.
+  When a node requests an input value during code generation via `input.genValue(current)`, `readGenValue` resolves the dependency through a multi-stage process:
+  1. **Mode Differentiation**: When invoked on an output socket, it triggers `parentNode.genCodeIfNecessary(current)` and returns the node's cached session value. When invoked on an input socket, it resolves the upstream data source.
+  2. **Upstream Link Resolution**: If the input socket is linked (`hasLink`), it locates the connected upstream output socket (`availableLinkedAttribute`). It verifies the connection exists and asserts that the socket is not linked to itself.
+  3. **Circular Recursion Guard**: Before traversing upstream, it checks `current.codeGen.isBusy(this)`. If the socket is already marked busy in the compilation session, generation halts immediately with an `err_recursiondetected` diagnostic.
+  4. **Recursive Upstream Execution**: The socket marks itself as busy in `CodeGen`, recursively invokes `linkedAttrib.genValue(current)` to force the upstream node to generate its session code, asserts that the resulting value matches the expected `GenValue` subtype `R`, and unmarks itself in a `finally` block.
+  5. **Editor Fallback Evaluation**: If the socket has no incoming link, it falls back to the local editor field value (`inputFieldValue`). If the socket strictly requires a connection (such as required OpenCV Mat inputs) and no default constant exists, it raises an actionable validation error on the pin.
 * **Layout and ImGui 1.92+ Width Protection**:
   * Input sockets render left-aligned with their icon and label.
   * Output sockets render right-aligned against the node boundary. In ImGui 1.92+, calculating node dimensions during indenting can trigger an unbounded layout feedback loop. `TypedAttribute` enforces a `maxIndent = 200.0f` cap to guarantee visual stability.
@@ -180,30 +152,12 @@ Defined in `VisionGraph/src/main/kotlin/org/deltacv/visiongraph/attribute/TypedA
 
 ## The `AttributeType<A>` Companion Contract
 
-Every typed attribute class in VisionGraph pairs with a companion object implementing the `AttributeType<A>` interface (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/attribute/TypedAttribute.kt`):
+The contract establishes a standardized interface for metadata, visual theming, factory instantiation, and decomposer wiring:
 
-```kotlin
-interface AttributeType<A: TypedAttribute<*>> {
-    val icon: String
-    val allowsNew: Boolean get() = true
-
-    val styleColor: Int get() = VisionGraph.imnodesStyle.pin
-    val styleHoveredColor: Int get() = VisionGraph.imnodesStyle.pinHovered
-
-    val listStyleColor: Int get() = VisionGraph.imnodesStyle.pin
-    val listStyleHoveredColor: Int get() = VisionGraph.imnodesStyle.pinHovered
-
-    val isDefaultListColor: Boolean get() =
-        listStyleColor == VisionGraph.imnodesStyle.pin
-            && listStyleHoveredColor == VisionGraph.imnodesStyle.pinHovered
-
-    fun new(mode: AttributeMode, variableName: String): A {
-        throw UnsupportedOperationException("Cannot instantiate this attribute with new")
-    }
-
-    fun newDecomposer(): AttributeDecomposer<*>? = null
-}
-```
+* **Visual Identity (`icon`, `styleColor`, `styleHoveredColor`)**: Defines the FontAwesome icon glyph and the ImNodes pin color in both idle and hovered states.
+* **List Palette Styling (`listStyleColor`, `listStyleHoveredColor`, `isDefaultListColor`)**: Specifies custom colors when instances of this attribute type are embedded inside composite `ListAttribute` containers.
+* **Dynamic Factory (`new`, `allowsNew`)**: Instantiates new attribute instances dynamically given an `AttributeMode` (`INPUT` or `OUTPUT`) and variable name. Sockets that cannot be created on-the-fly override `allowsNew = false`.
+* **Decomposition Provider (`newDecomposer`)**: Returns a dedicated `AttributeDecomposer` instance if the attribute can be unpacked into constituent primitive sockets (e.g. decomposing a `Rect` into position and size vectors), or `null` if the data type is atomic.
 
 ### Purpose of the `AttributeType` Contract
 
@@ -211,26 +165,60 @@ interface AttributeType<A: TypedAttribute<*>> {
 2. **Dynamic Instantiation (`new`)**: Allows composite attributes (like `ListAttribute`) to instantiate new element sockets dynamically at runtime.
 3. **Decomposer Discovery (`newDecomposer`)**: Informs transformer nodes whether the socket supports decomposition into component parts.
 
-### Complete Attribute Type Catalog
+### Decentralized Extensibility
 
-| Attribute Class | Companion Interface | Pin Icon | Decomposable? | Primary Value Carried |
-| :--- | :--- | :--- | :--- | :--- |
-| **`BooleanAttribute`** | `AttributeType<BooleanAttribute>` | `FontAwesomeIcons.ToggleOn` | No | `GenValue.Boolean` |
-| **`IntAttribute`** | `AttributeType<IntAttribute>` | `FontAwesomeIcons.Hashtag` | No | `GenValue.Int` |
-| **`DoubleAttribute`** | `AttributeType<DoubleAttribute>` | `FontAwesomeIcons.Hashtag` | No | `GenValue.Double` |
-| **`RangeAttribute`** | `AttributeType<RangeAttribute>` | `FontAwesomeIcons.ArrowsAltH` | No | `GenValue.Range` |
-| **`StringAttribute`** | `AttributeType<StringAttribute>` | `FontAwesomeIcons.Font` | No | `GenValue.String` |
-| **`EnumAttribute<E>`** | `AttributeType<EnumAttribute<*>>` | `FontAwesomeIcons.List` | No | `GenValue.Enum<E>` |
-| **`MatAttribute`** | `AttributeType<MatAttribute>` | `FontAwesomeIcons.Image` | **Yes** (`MatAttributeDecomposer`) | `GenValue.Mat` (with ColorSpace) |
-| **`Vector2Attribute`**| `AttributeType<Vector2Attribute>` | `FontAwesomeIcons.ArrowsAlt` | **Yes** (`Vector2AttributeDecomposer`)| `GenValue.Vec2` |
-| **`RectAttribute`** | `AttributeType<RectAttribute>` | `FontAwesomeIcons.VectorSquare` | **Yes** (`RectAttributeDecomposer`)| `GenValue.Rect` |
-| **`RotatedRectAttribute`**| `AttributeType<RotatedRectAttribute>`| `FontAwesomeIcons.SyncAlt` | No | `GenValue.RotatedRect` |
-| **`CircleAttribute`** | `AttributeType<CircleAttribute>` | `FontAwesomeIcons.Circle` | No | `GenValue.Circle` |
-| **`KeyPointAttribute`**| `AttributeType<KeyPointAttribute>`| `FontAwesomeIcons.DotCircle` | No | `GenValue.KeyPoint` |
-| **`PointsAttribute`** | `AttributeType<PointsAttribute>` | `FontAwesomeIcons.EllipsisH` | No | `GenValue.Points` |
-| **`LineParametersAttribute`**| `AttributeType<LineParametersAttribute>`| `FontAwesomeIcons.PaintBrush` | No | `GenValue.LineParameters` |
-| **`ListAttribute<E, ER>`**| `AttributeType<ListAttribute<*, *>>`| `FontAwesomeIcons.List` | No | `GenValue.List<ER>` |
-| **`AnyAttribute`** | `AttributeType<AnyAttribute>` | `FontAwesomeIcons.Asterisk` | Dynamic | Wildcard `GenValue` |
+VisionGraph deliberately avoids maintaining a central enum, registry, or catalog of attribute types. Sockets are designed around the **Open-Closed Principle**:
+* New attribute types can be created in any package or external module without modifying core registries.
+* Sockets self-describe their capabilities, visual theme, and factory construction entirely through their local `AttributeType` companion.
+* Features like link type-checking, composite containers (`ListAttribute`), and dynamic decomposition (`DecomposerNode`) interact with attributes purely through the `AttributeType` interface rather than hardcoded `when` or `instanceof` branches.
+
+### Behavioral Archetypes
+
+Rather than rigid type hierarchies, sockets fall into distinct behavioral categories:
+
+1. **Primitive & Scalar Sockets**:
+   * Carry scalar values such as integers, floating-point numbers, booleans, ranges, or enums.
+   * Typically bridge an interactive editor widget (sliders, combo boxes, text inputs) with emitted code literals or live tuner fields.
+   * Do not provide decomposers as they are already atomic.
+
+2. **Computer Vision & Geometric Sockets**:
+   * Carry domain objects such as image buffers (`GenValue.Mat`), 2D vectors, bounding rectangles, rotated rectangles, or keypoints.
+   * Sockets carrying structured data (such as rectangles or vectors) often provide an `AttributeDecomposer` via `newDecomposer()`, allowing `DecomposerNode` to unpack them into constituent properties.
+   * Can carry domain-specific metadata (such as color space tracking in `MatAttribute`).
+
+3. **Composite & Container Sockets**:
+   * Higher-order sockets (such as `ListAttribute`) that manage a dynamic collection of child sockets.
+   * Decoupled from concrete child types: they operate on any `AttributeType`, querying `new()` to spawn child elements on demand and inheriting the child's theme colors.
+
+4. **Polymorphic & Wildcard Sockets**:
+   * Sockets like `AnyAttribute` that dynamically accept connections from diverse attribute types.
+   * Utilize functional predicates (`linkAcceptor`) to accept, reject, or morph socket behavior based on the connected counterparty at runtime.
+
+### Implementing a New Socket Type
+
+To introduce a new attribute to VisionGraph, a developer only needs to implement two components:
+
+1. **Subclass `TypedAttribute<R>`**: Parameterize with an intermediate compiler value (`GenValue` subtype `R`), pass the companion object into `super(Companion)`, and implement UI rendering if the socket displays widgets.
+2. **Implement `AttributeType<Self>` on the Companion Object**: Declare visual icons/colors, implement `new(mode, variableName)` for dynamic list embedding, and optionally return an `AttributeDecomposer` from `newDecomposer()`.
+
+Once declared, the socket is immediately fully functional across the node editor, link validation, composite lists, decomposers, and code generation without altering any central registration files:
+
+```kotlin
+// Canonical Pattern: Subclass TypedAttribute with a Companion implementing AttributeType
+class FloatAttribute(
+    mode: AttributeMode,
+    variableName: String = "$[att_value]"
+) : TypedAttribute<GenValue.Float>(Companion) {
+
+    override var attributeName: String? = variableName
+
+    // Companion object serves as the decentralized AttributeType descriptor
+    companion object : AttributeType<FloatAttribute> {
+        override val icon = FontAwesomeIcons.Hashtag
+        override fun new(mode: AttributeMode, variableName: String) = FloatAttribute(mode, variableName)
+    }
+}
+```
 
 ---
 
@@ -252,10 +240,7 @@ interface AttributeType<A: TypedAttribute<*>> {
 ### Key Architectural Behaviors
 
 1. **Composite Visual Icon & Styling**:
-   * Icon is dynamically assembled from brackets and the child element's icon:
-     ```kotlin
-     override var icon = "${FontAwesomeIcons.ChevronLeft}[${elementAttributeType.icon}${FontAwesomeIcons.ChevronRight}"
-     ```
+   * The icon is dynamically assembled by enclosing the child element's icon in bracket glyphs (`<[elementIcon]>`).
    * Pin color inherits from `elementAttributeType.listStyleColor`.
 2. **Fixed vs Dynamic Lists**:
    * If `fixedLength` is set, the socket maintains exactly that number of child sockets and disallows manual deletion.
@@ -270,58 +255,22 @@ interface AttributeType<A: TypedAttribute<*>> {
 Connections between sockets are governed by strict type matching and topological validation.
 
 ### 1. Link Acceptance Rules (`acceptLink`)
-When a user drags a link between sockets, `acceptLink(other)` executes:
+When a user drags a link between sockets, the target attribute's `acceptLink(other)` method evaluates the proposed connection against several criteria:
+1. **Direction Invariant**: Links must always connect an `OUTPUT` socket to an `INPUT` socket. Connecting two inputs or two outputs is rejected immediately.
+2. **Matching Attribute Type**: The connection is accepted if both sockets share the same `AttributeType` companion identity (e.g. connecting a `MatAttribute` output to a `MatAttribute` input).
+3. **Exact Class Equality**: Sockets sharing the exact same concrete Kotlin class are accepted.
+4. **Polymorphic Wildcards**: An output pin can connect to an `AnyAttribute` if the target's `linkAcceptor` predicate approves the source.
+5. **List Element Embedding**: An output socket can link directly to an input `ListAttribute` if the output's `attributeType` matches the list's `elementAttributeType`. The list automatically wraps and appends the connection as a new element.
 
-```kotlin
-// TypedAttribute.kt
-override fun acceptLink(other: Attribute): LinkAcceptance {
-    val sameTypedAttribute = other is TypedAttribute<*> && other.attributeType == attributeType
-    val sameClass = this::class == other::class
-    val outputToAny = mode == AttributeMode.OUTPUT && other is AnyAttribute
-
-    // Allow output of matching type to link into an input ListAttribute
-    val outputToMatchingList = mode == AttributeMode.OUTPUT &&
-            other is ListAttribute<*, *> &&
-            other.elementAttributeType == attributeType
-
-    return if (sameTypedAttribute || sameClass || outputToAny || outputToMatchingList) {
-        LinkAcceptance.Accept
-    } else {
-        LinkAcceptance.Reject()
-    }
-}
-```
-
-* **Direction Invariant**: Links must always connect an `OUTPUT` socket to an `INPUT` socket.
-* **Type Invariant**: Sockets must share the same `AttributeType` or match the `ListAttribute` element type.
-* **Wildcards**: `AnyAttribute` uses a lambda predicate `linkAcceptor: (Attribute) -> LinkAcceptance` to accept or reject links dynamically.
+If none of these criteria match, the connection is rejected with an explanatory failure message (`err_couldntlink_didntmatch`).
 
 ### 2. Topological Cycle Prevention (`DirectedNodeGraph`)
 Even if socket types match, a link is rejected if it would create an algorithmic cycle.
 
-`DirectedNodeGraph` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/node/DirectedNodeGraph.kt`) tracks the DAG structure in an adjacency list `Map<Int, Set<Int>>`:
-
-```kotlin
-fun hasCycleIfAdded(fromNodeId: Int, toNodeId: Int): Boolean {
-    if (fromNodeId == toNodeId) return true // Immediate self-loop
-
-    val visited = mutableSetOf<Int>()
-
-    fun dfs(current: Int): Boolean {
-        if (current == fromNodeId) return true // Traced back to start = cycle!
-        if (!visited.add(current)) return false
-
-        adjacencyList[current]?.forEach { next ->
-            if (dfs(next)) return true
-        }
-        return false
-    }
-
-    return dfs(toNodeId)
-}
-```
-
-Before `CreateLinkAction` creates a link, `nodeEditor.hasCycleIfAdded(fromNode, toNode)` runs this recursive Depth-First Search (DFS). If `toNode` can reach `fromNode`, the connection is rejected immediately, preventing visual graphs from ever entering an infinite recursion state.
+`DirectedNodeGraph` (`VisionGraph/src/main/kotlin/org/deltacv/visiongraph/node/DirectedNodeGraph.kt`) tracks the DAG structure in an internal adjacency map (`fromNodeId -> Set<toNodeId>`). Before `CreateLinkAction` creates a link:
+1. **Immediate Self-Loop Check**: Rejects any link where `fromNodeId == toNodeId`.
+2. **Recursive DFS Traversal**: Runs a Depth-First Search starting at `toNodeId` to explore all downstream paths.
+3. **Cycle Rejection**: If any traversal branch reaches `fromNodeId`, a path already exists from target to source. Adding the proposed link would close an infinite loop, so the connection is rejected immediately. This prevents visual graphs from ever entering an infinite recursion state.
 
 ---
 
@@ -346,29 +295,15 @@ Rather than creating dozens of static nodes (e.g. `DecomposeRect`, `DecomposeMat
 ### How Decomposition Works
 
 1. **Link Verification**:
-   `DecomposerNode.input` is an `AnyAttribute`. Its `linkAcceptor` tests whether the candidate socket provides a decomposer:
-   ```kotlin
-   val decomposer = (candidate as? TypedAttribute<*>)?.attributeType?.newDecomposer()
-   if (decomposer != null) LinkAcceptance.Accept else LinkAcceptance.Reject(...)
-   ```
+   `DecomposerNode.input` is an `AnyAttribute`. Its `linkAcceptor` dynamically checks if the incoming candidate socket's `AttributeType` companion provides a decomposer via `newDecomposer()`. If a decomposer exists, the link is accepted; otherwise, the connection is rejected.
 2. **Socket Injection**:
-   When a link is created:
-   * `DecomposerNode.drawNode()` detects the new link and calls `newDecomposer.enable(this, input)`.
-   * `AttributeDecomposer.onEnable()` executes, using `+attribute` to add output sockets to the `DecomposerNode`.
+   When a valid link is established:
+   * `DecomposerNode` detects the connection and attaches the new decomposer instance via `enable(node, input)`.
+   * The active `AttributeDecomposer` runs its `onEnable()` lifecycle, registering specialized output sockets directly onto the `DecomposerNode`.
 3. **Cleanup**:
-   If the link is disconnected, `decomposer.disable()` removes the injected output sockets and deletes them, returning the node to its empty state.
+   If the link is disconnected, `decomposer.disable()` removes the dynamically injected output sockets and tears them down, returning the node to its dormant empty state.
 4. **Code Generation Delegation**:
-   `DecomposerNode` delegates code generation and output resolution to the active decomposer:
-   ```kotlin
-   override val generators = polyglot {
-       generatorForAny { _, current ->
-           decomposer?.let {
-               current.codeGen.sessions[it] = it.genCode(input.genValue(current), current)
-           }
-           NoSession
-       }
-   }
-   ```
+   `DecomposerNode` declares a universal polyglot generator that delegates execution to the active decomposer. During code generation, the decomposer extracts the incoming `GenValue` from the input socket, generates the component property extractions for the target language, and stores its session in `current.codeGen.sessions`. Output sockets defer their values directly to this session.
 
 ### Concrete Decomposers
 
@@ -418,53 +353,22 @@ In robotics pipelines, some nodes produce vital side-effects but do not feed bac
 
 Because nothing pulls from these nodes, a pure backward traversal would leave them out of the generated code.
 
-VisionGraph solves this with **Dead-End Propagation** in `Node.kt`:
+VisionGraph solves this with **Dead-End Propagation** in `Node`:
 
-```kotlin
-// Node.kt
-fun hasDeadEnd(initialNode: Node<*> = this): Boolean {
-    for (attribute in nodeAttributes) {
-        if (attribute.mode == AttributeMode.INPUT) continue
+#### 1. Dead-End Identification (`hasDeadEnd`)
+A node is identified as a dead end relative to the pipeline's main output if none of its downstream paths eventually connect to `OutputMatNode`:
+* The algorithm traverses all output sockets of the node and inspects their connected counterparty attributes.
+* Sockets connecting back to the initial traversal node or flowing backwards are ignored to prevent infinite recursion.
+* If any connected downstream node is an instance of `OutputMatNode`, or recursively reports that it does *not* terminate in a dead end, the branch is proven to contribute to the primary frame pipeline, and `hasDeadEnd` returns `false`.
+* If all downstream paths terminate at leaf nodes without ever reaching `OutputMatNode`, the node is marked as a dead end (`hasDeadEnd` returns `true`).
 
-        for (linkedAttribute in attribute.availableLinkedAttributes) {
-            if (linkedAttribute != null) {
-                if (linkedAttribute.mode == AttributeMode.OUTPUT || linkedAttribute.parentNode == initialNode) {
-                    continue
-                }
-
-                // If any link reaches OutputMatNode, this path is NOT a dead end
-                if (linkedAttribute.parentNode is OutputMatNode || !linkedAttribute.parentNode.hasDeadEnd(initialNode)) {
-                    return false
-                }
-            }
-        }
-    }
-    return true
-}
-
-override fun codeGenPropagate(current: CodeGen.Current) {
-    val linkedNodes = mutableListOf<Node<*>>()
-
-    // Discover all direct downstream nodes
-    for (attribute in _nodeAttributes) {
-        if (attribute.mode == AttributeMode.OUTPUT) {
-            for (linkedAttribute in attribute.availableLinkedAttributes) {
-                if (linkedAttribute != null && !linkedNodes.contains(linkedAttribute.parentNode)) {
-                    linkedNodes.add(linkedAttribute.parentNode)
-                }
-            }
-        }
-    }
-
-    // Identify which downstream nodes are dead ends (do not reach OutputMatNode)
-    val deadEndNodes = linkedNodes.filter { it.hasDeadEnd() }
-
-    // Explicitly force code generation for dead ends so side effects are emitted
-    deadEndNodes.forEach { it.genCodeIfNecessary(current) }
-}
-```
-
-Whenever a node completes code generation, `codeGenPropagate(current)` crawls downstream connections. If it detects a downstream branch that terminates in a dead end, it explicitly invokes `genCodeIfNecessary(current)` on that branch, guaranteeing side-effect nodes are fully compiled.
+#### 2. Forward Push Propagation (`codeGenPropagate`)
+Because dead-end branches cannot be reached by the standard backward pull originating at `OutputMatNode`, compilation must be pushed forward into them:
+* Immediately after any node finishes generating its own code during `genCodeIfNecessary(current)`, its `codeGenPropagate(current)` method is invoked.
+* The method discovers all direct downstream nodes connected to the current node's output sockets.
+* It filters these downstream nodes using `hasDeadEnd()` to isolate the branches that will never be reached by the primary backward pull.
+* For every dead-end downstream node discovered, it explicitly invokes `genCodeIfNecessary(current)`.
+* This pushes compilation forward along the dead-end branch, guaranteeing that side-effect statements (such as target telemetry publication or data export) are fully generated and inserted into the output source code.
 
 ---
 

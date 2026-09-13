@@ -94,35 +94,17 @@ A fundamental architectural design decision in VisionGraph is running the visual
 
 ### Process Launch Sequence (`VisionGraphProcessRunner`)
 
-The host launches the child process via `VisionGraphProcessRunner.execPaperVision(classpath)`:
+The host launches the child process via `VisionGraphProcessRunner`:
 
-```kotlin
-// VisionGraphProcessRunner.kt
-val programParams = listOf("-q", "-i=${paperVisionEngine.server.port}")
-
-val exitCode = if(SysUtil.OS == SysUtil.OperatingSystem.MACOS) {
-    val jvmArgs = listOf("-XstartOnFirstThread", "-Djava.awt.headless=true")
-    JavaProcess.execClasspath(
-        VisionGraphIpcMain::class.java,
-        SLF4JIOReceiver(logger),
-        classpath,
-        jvmArgs,
-        programParams
-    )
-} else {
-    JavaProcess.execClasspath(
-        VisionGraphIpcMain::class.java,
-        SLF4JIOReceiver(logger),
-        classpath,
-        listOf(),
-        programParams
-    )
-}
-```
-
-* `-q` (`--queryproject`): Signals the child to request the active project graph from the host immediately upon startup.
-* `-i` (`--ipcport`): Passes the ephemeral WebSocket port where `EOCVSimIpcEngine` is listening.
-* `onPaperVisionExitError`: If the child process exits with a non-zero exit code, the host catches the event and immediately checks for crash recovery snapshots.
+* **CLI Arguments Passed to Child**:
+  * `-q` (`--queryproject`): Signals the child to request the active project graph from the host immediately upon connection.
+  * `-i=${port}` (`--ipcport`): Passes the ephemeral WebSocket port where `EOCVSimIpcEngine` is listening.
+* **Platform-Specific JVM Arguments**:
+  * **macOS**: Cocoa's window manager requires GLFW and OpenGL event pumps to run on the primary OS thread, requiring `-XstartOnFirstThread`. In addition, `-Djava.awt.headless=true` is passed to prevent AWT toolkit initialization from colliding with the host simulator's Swing UI.
+  * **Windows & Linux**: Standard JVM parameters are passed without thread affinity constraints.
+* **Process Lifecycle Monitoring**:
+  * Output streams (stdout and stderr) are piped into SLF4J loggers.
+  * If the child process exits with a non-zero exit code (e.g. native SIGSEGV or out-of-memory crash), the runner intercepts the failure and immediately triggers the crash recovery scanner.
 
 ---
 
@@ -184,33 +166,17 @@ EOCVSimIpcEngineBridge                             EOCVSimIpcEngine
 
 ## Dynamic Compilation via Janino (`SinglePipelineCompiler`)
 
-When an algorithm changes, VisionGraph does not invoke `javac` or spawn an external build tool. Instead, it compiles generated Java source code directly into JVM bytecode in memory using **Janino** (`VisionBenchPlugin/src/main/kotlin/org/deltacv/visiongraph/plugin/previz/SinglePipelineCompiler.kt`):
+When an algorithm changes, VisionGraph does not invoke `javac` or spawn an external build tool. Instead, it compiles generated Java source code directly into JVM bytecode in memory using **Janino** (`VisionBenchPlugin/src/main/kotlin/org/deltacv/visiongraph/plugin/previz/SinglePipelineCompiler.kt`).
 
-```kotlin
-object SinglePipelineCompiler {
-    fun compilePipeline(pipelineSource: String): Class<out OpenCvPipeline> {
-        val compiler = SimpleCompiler()
-
-        // Compiles source code string directly in memory
-        compiler.cook(pipelineSource)
-
-        if (compiler.classFiles.isEmpty()) {
-            throw IllegalStateException("No class files generated.")
-        }
-
-        // Search through compiled classes for the OpenCvPipeline subclass
-        for (classFile in compiler.classFiles) {
-            val clazz = compiler.classLoader.loadClass(classFile.thisClassName)
-
-            if (ReflectUtil.hasSuperclass(clazz, OpenCvPipeline::class.java)) {
-                return clazz as Class<out OpenCvPipeline>
-            }
-        }
-
-        throw IllegalStateException("No OpenCvPipeline subclass found in source.")
-    }
-}
-```
+### The In-Memory Compilation Lifecycle
+1. **Source Cooking**:
+   `SinglePipelineCompiler` initializes Janino's `SimpleCompiler` and calls `cook(pipelineSource)`. The source code string is parsed, type-checked, and converted directly into JVM bytecode in memory without writing intermediate `.java` or `.class` files to disk.
+2. **Classfile Discovery**:
+   After cooking, the compiler checks `compiler.classFiles`. If no class files were generated, it raises an explicit error.
+3. **Pipeline Subclass Identification**:
+   The compiler iterates through the loaded class files and uses reflection (`ReflectUtil.hasSuperclass`) to locate the concrete class inheriting from `OpenCvPipeline`.
+4. **ClassLoader Isolation**:
+   The compiled class is loaded via a dedicated `JavaSourceClassLoader`. This complete classloader isolation guarantees that when an algorithm is recompiled, the old class, static state, and native allocations can be cleanly garbage-collected.
 
 ### Why Janino?
 * **Sub-50ms Compilation**: Janino compiles Java source code directly to bytecode without disk I/O or inter-process communication.
@@ -276,11 +242,7 @@ Steady-state frame streaming must avoid triggering JVM Garbage Collection pauses
 ### 2. Native TurboJPEG Compression (`MackJPEG`)
 * Uses native SIMD-accelerated libjpeg-turbo through the `MackJPEG` library.
 * Compresses raw OpenCV `CV_8UC3` RGB buffers into JPEG format using hardware acceleration.
-* **Graceful OpenCV Fallback**: If `MackJPEG` encounters a native exception (`JPEGException`), the streamer catches the error, logs a warning once, and falls back to OpenCV's built-in encoder:
-  ```kotlin
-  Imgproc.cvtColor(targetImage, targetImage, Imgproc.COLOR_RGB2BGR)
-  Imgcodecs.imencode(".jpg", targetImage, bytes)
-  ```
+* **Graceful OpenCV Fallback**: If `MackJPEG` encounters a native exception (`JPEGException`), the streamer catches the error, logs a warning once, converts the target image to BGR using `Imgproc.cvtColor`, and encodes it with OpenCV's standard `Imgcodecs.imencode`.
 
 ### 3. Dynamic Frame Differencing Optimization (`hasChanged`)
 Transmitting identical frames over WebSocket wastes CPU and network bandwidth. Before compressing a frame, `hasChanged(id, image)` checks for image divergence:
@@ -290,13 +252,9 @@ Transmitting identical frames over WebSocket wastes CPU and network bandwidth. B
 
 ### 4. Binary Wire Packaging
 Frames are prefixed with binary metadata via `ByteMessages`:
-```kotlin
-val headerSize = ByteMessages.headerSize(tag)
-// ... compress JPEG into jpegBuffer after header offset ...
-ByteMessages.writeHeader(tag, id, jpegSize, byteMessageBuffer)
-ipcEngine.sendBytes(jpegBuffer)
-```
-The packet is transmitted over the WebSocket as raw binary (`ByteArray`), bypassing JSON serialization completely.
+* `ByteMessages.writeHeader(tag, id, jpegSize, buffer)` writes the tag string, stream ID, and payload size directly at the start of a pre-allocated byte buffer.
+* The compressed JPEG bytes are positioned immediately following this header without extra memory copies.
+* The resulting packet is transmitted across the WebSocket as a raw binary byte array (`ByteArray`), bypassing JSON serialization completely.
 
 ---
 
@@ -340,12 +298,7 @@ Visual algorithm development is vulnerable to crashes caused by invalid OpenCV m
 ### 3. Phased Recovery UI
 Upon launching VisionBench or detecting a child exit error:
 1. `VisionGraphProjectManager` crawls `~/.papervision/papervision_recovery/`.
-2. It parses any `.recoverypaperproj` files and compares their timestamps against the project files on disk:
-   ```kotlin
-   if (recoveredProject.date > project.timestamp) {
-       add(recoveredProject)
-   }
-   ```
+2. It parses any `.recoverypaperproj` files and compares their timestamps against the project files on disk, collecting any snapshots that are newer than the latest on-disk save.
 3. If an unsaved snapshot is newer than the saved project, `VisionGraphDialogFactory.displayProjectRecoveryDialog()` prompts the user with a visual recovery list, allowing one-click restoration of their unsaved pipeline.
 
 ---

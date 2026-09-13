@@ -79,14 +79,8 @@ If both windows shared the same ImNodes context, selecting, hovering, or draggin
 VisionGraph solves this via **Dual Context Isolation**:
 1. **Canvas Context**: `NodeEditor` allocates its own context via `ImNodes.editorContextCreate()`.
 2. **Palette Context**: `NodeList` allocates a separate `ImNodes.editorContextCreate()`.
-3. During rendering, each window explicitly switches contexts:
-   ```kotlin
-   // In NodeEditor.draw():
-   ImNodes.editorContextSet(editorContext)
-   // In NodeList.draw():
-   ImNodes.editorContextSet(paletteContext)
-   ```
-4. Furthermore, `NodeList` pushes its own isolated `DenseIdContainer` onto `IdContext.local`, ensuring that internal element IDs never overlap with canvas element IDs.
+3. **Context Switching**: During rendering, `NodeEditor.draw()` binds `editorContext` via `ImNodes.editorContextSet(editorContext)`, while `NodeList.draw()` activates `paletteContext` via `ImNodes.editorContextSet(paletteContext)`.
+4. **Scoped ID Container**: Furthermore, `NodeList` pushes its own isolated `DenseIdContainer` onto `IdContext.local`, ensuring that internal preview IDs never overlap with live canvas element IDs.
 
 ---
 

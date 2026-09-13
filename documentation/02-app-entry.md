@@ -124,60 +124,30 @@ On the very first frame after context creation:
 * Window focus is requested.
 
 ### 2. Standard Frame Tick (`process()`)
-On every frame:
-```kotlin
-fun process() = containers.withContext {
-    onUpdate.run()
-    engineClient.process()
-
-    ImGui.setNextWindowPos(0f, 0f, ImGuiCond.Always)
-    val size = window.size
-    ImGui.setNextWindowSize(size.x, size.y, ImGuiCond.Always)
-
-    defaultFont.push()
-
-    windows.forEach { it.draw() }
-    popups.forEach { it.draw() }
-    textureProcessorQueues.forEach { it.draw() }
-
-    ImGui.popFont()
-
-    keyManager.update()
-    previzManager.update()
-}
-```
-
-* **`onUpdate.run()`**: Dispatches scheduled frame events and runs deferred callbacks registered via `PaperEventHandler`.
-* **`engineClient.process()`**: Drains incoming binary/JSON packet queues received over the bridge, processes message responses, handles request timeouts (TTL purge), and triggers stream callbacks.
-* **Viewport Geometry Setup**: Fixes the root window boundary to fill the exact GLFW viewport.
-* **UI Draw Pass**:
-  * Loops through all registered `Window` instances (including `NodeEditor`, `NodeList`, and tool windows) calling `draw()`.
-  * Loops through active popups and modal dialogs.
-  * Calls `textureProcessorQueues.forEach { it.draw() }`, which consumes queued JPEG frame bytes and executes thread-affine OpenGL texture creation.
-* **Input & Stream Updates**:
-  * `keyManager.update()`: Cleans up transient single-frame key states (e.g., transitions `PRESS` -> `PRESSING`).
-  * `previzManager.update()`: Checks stream health, evaluates frame rate statistics, and detects pipeline timeouts.
+On every rendering tick, the engine executes inside `containers.withContext`:
+1. **Deferred Event Dispatch (`onUpdate.run()`)**: Runs all scheduled frame events and deferred one-shot callbacks registered via `PaperEventHandler`.
+2. **Engine Communication Ingestion (`engineClient.process()`)**: Drains incoming binary and JSON packet queues received over the bridge, matches responses to pending requests, purges timed-out requests, and fires stream callbacks.
+3. **Viewport Geometry Setup**: Clamps the root ImGui window position to `(0, 0)` and dimensions to match the current GLFW window size.
+4. **UI Draw Pass**:
+   * Sets the application default font.
+   * Loops through all registered `Window` instances (including `NodeEditor`, `NodeList`, and tool windows), invoking `draw()`.
+   * Loops through active popups and modal dialogs.
+   * Invokes `draw()` across all `TextureProcessorQueue` instances, which consumes queued JPEG frame bytes and uploads them directly to GPU textures via thread-affine OpenGL calls.
+5. **Input and Stream Updates**:
+   * `keyManager.update()`: Cleans up transient single-frame key states (e.g. transitioning `PRESS` to `PRESSING`).
+   * `previzManager.update()`: Checks stream health, evaluates FPS metrics, and flags stale pipeline streams.
 
 ---
 
 ## Teardown and Graceful Shutdown
 
-When the user requests window closure (via OS close button or keyboard shortcut), GLFW signals `windowShouldClose`. `LWJGLPaperVisionApp.postRun()` delegates to `visionGraph.destroy()`:
+When the user requests window closure (via the OS close button or keyboard shortcut), GLFW signals `windowShouldClose`. `LWJGLPaperVisionApp.postRun()` triggers `visionGraph.destroy()`, executing a disciplined 5-stage shutdown protocol:
 
-```kotlin
-fun destroy() {
-    logger.info("Shutting down VisionGraph...")
-
-    config.save()                    // 1. Flush preferences to disk
-    engineClient.disconnect()        // 2. Terminate engine bridge & websocket connections
-    textureProcessorQueue.delete()   // 3. Free queued image buffers & GPU textures
-
-    windows.reversed().forEach { it.delete() } // 4. Dispose windows in reverse order
-    popups.reversed().forEach { it.delete() }
-
-    nodeEditor.delete()              // 5. Release ImNodes editor context
-}
-```
+1. **Flush Preferences (`config.save()`)**: Serializes current platform settings, language choices, and window positions directly to `~/.papervision/config.json`.
+2. **Disconnect Bridge (`engineClient.disconnect()`)**: Terminates engine bridge and WebSocket connections, notifying the host simulator that the child editor has disconnected.
+3. **Release Graphics Resources (`textureProcessorQueue.delete()`)**: Drains queued image buffers and deletes OpenGL texture handles to prevent GPU driver leaks.
+4. **Dispose Windows & Popups**: Disposes all registered `Window` and `Popup` instances in reverse registration order, executing cleanup logic.
+5. **Release Editor Context (`nodeEditor.delete()`)**: Releases native ImNodes editor contexts and cleans up canvas memory.
 
 ---
 

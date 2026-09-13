@@ -1,4 +1,4 @@
-# PaperVision
+# VisionGraph (formely PaperVision)
 
 Create your custom OpenCV algorithms using a user-friendly node editor, inspired by industry-leading interfaces! Quickly prototype your vision as you edit.
 
@@ -6,11 +6,11 @@ Create your custom OpenCV algorithms using a user-friendly node editor, inspired
 
 # Getting Started
 
-## Run with EOCV-Sim (recommended)
+## Run with VisionBench (recommended)
 
-PaperVision is available out of the box in EOCV-Sim v4.0.0 and later. [You can download the latest version of EOCV-Sim from the docs here](https://docs.deltacv.org/eocv-sim/downloading-eocv-sim).<br><br>
-**Create a new project from the PaperVision tab and start experimenting right away.**
-EOCV-Sim integration enables live pipeline previews directly from the node editor.
+VisionGraph is available out of the box in VisionBench v2027.0.0 and later. [You can download the latest version of VisionBench from the docs here](https://docs.deltacv.org/eocv-sim/downloading-eocv-sim).<br><br>
+**Create a new project from the VisionGraph tab and start experimenting right away.**
+VisionBench integration enables live pipeline previews directly from the node editor.
 
 ## Run with Gradle (development)
 
@@ -18,12 +18,12 @@ Use the following commands to run the project with gradle, this will allow you t
 <br>
 
 ```shell
-git clone https://github.com/deltacv/PaperVision.git
+git clone https://github.com/deltacv/VisionGraph.git
 cd VisionGraph
 ./gradlew runEv
 ```
 
-<br>**Live previewing is unavailable in this mode** (the backend runs in NO-OP due to the absence of EOCV-Sim), but the node editor remains fully testable.
+<br>**Live previewing is unavailable in this mode** (the backend runs in NO-OP due to the absence of VisionBench), but the node editor remains fully testable.
 
 # Community
 
